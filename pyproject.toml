@@ -1,0 +1,26 @@
+[project]
+name = "mojo-ta-lib"
+version = "0.1.0"
+description = "Technical analysis indicator kernels implemented in Mojo"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Lee Penkman", email = "leepenkman@gmail.com" }]
+keywords = ["mojo", "ta-lib", "technical-analysis", "indicators"]
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+dev = ["pytest", "TA-Lib"]
+
+[project.urls]
+Homepage = "https://github.com/lee101/mojo-ta-lib"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = { "" = "python" }
+
+[tool.setuptools.packages.find]
+where = ["python"]
