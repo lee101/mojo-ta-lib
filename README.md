@@ -81,22 +81,25 @@ two-million-element contiguous float64 arrays and TA-Lib Python bindings
 
 | indicator | Mojo | TA-Lib | result |
 | --- | ---: | ---: | ---: |
-| SMA(30), 2M | 3.82 ms | 5.18 ms | 1.35x faster |
-| EMA(30), 2M | 6.06 ms | 6.61 ms | 1.09x faster |
-| RSI(14), 2M | 19.82 ms | 16.23 ms | 1.22x slower |
-| MACD(12,26,9), 2M | 39.17 ms | 69.16 ms | 1.77x faster |
-| BBANDS(20), 2M | 29.88 ms | 37.12 ms | 1.24x faster |
-| ATR(14), 2M | 13.85 ms | 30.30 ms | 2.19x faster |
-| MIN(30), 2M | 10.34 ms | 15.40 ms | 1.49x faster |
-| CCI(14), 2M | 29.21 ms | 61.11 ms | 2.09x faster |
-| LINEARREG(14), 2M | 7.65 ms | 38.44 ms | 5.02x faster |
+| SMA(30), 2M | 2.68 ms | 4.43 ms | 1.65x faster |
+| EMA(30), 2M | 5.69 ms | 6.17 ms | 1.08x faster |
+| RSI(14), 2M | 5.88 ms | 16.14 ms | 2.75x faster |
+| MACD(12,26,9), 2M | 28.09 ms | 68.24 ms | 2.43x faster |
+| BBANDS(20), 2M | 28.08 ms | 36.16 ms | 1.29x faster |
+| ATR(14), 2M | 13.50 ms | 28.59 ms | 2.12x faster |
+| MIN(30), 2M | 6.97 ms | 13.19 ms | 1.89x faster |
+| CCI(14), 2M | 59.53 ms | 59.02 ms | 1.01x slower |
+| LINEARREG(14), 2M | 7.29 ms | 35.98 ms | 4.93x faster |
 
-Mojo is faster in eight of the nine measured cases. RSI's serial recurrence
-remains slower than TA-Lib and is reported as such. The
+Mojo is faster in eight of the nine measured cases. CCI is effectively at
+parity and its small measured regression is reported as such. The
 benchmark includes Python allocation and FFI overhead on both sides and prints
 a fresh Markdown table when rerun.
 
-No GPU path is included or benchmarked.
+No GPU path is included or benchmarked. The covered kernels are streaming or
+small-window rolling operations below roughly two floating-point operations
+per byte moved, so host/device transfers cannot be justified by their
+arithmetic intensity.
 
 ## How it works
 
@@ -110,13 +113,15 @@ those buffers.
 All arrays use ordinary row-major contiguous memory. The Mojo shared library
 does not allocate or retain heap memory, and no per-element calls cross the
 FFI. Only each indicator's short warm-up prefix is initialized to `NaN`;
-valid output is written directly by Mojo. MACD reuses its output buffers for
-intermediate EMAs, while CCI receives one caller-owned typical-price buffer.
+valid output is written directly by Mojo. MACD advances its fast, slow, and
+signal recurrences in one fused pass, while CCI receives one caller-owned
+typical-price buffer.
 
 CCI's typical-price transform and deviation pass use native-width float64
-SIMD with scalar remainder loops. Large CCI and rolling-extrema inputs are
-split into independent chunks with at most 16 workers; inputs below 262,144
-elements stay serial to avoid thread-launch overhead.
+SIMD with scalar remainder loops. Small-window extrema use a linear two-pass
+block algorithm without scratch allocation. CCI and rolling-extrema inputs of
+at least 2,097,152 elements are split into independent chunks with at most 16
+workers; smaller inputs stay serial to avoid thread-launch overhead.
 
 ## Development
 

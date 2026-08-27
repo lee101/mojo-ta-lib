@@ -6,8 +6,9 @@ from std.memory import stack_allocation
 from std.sys.info import simd_width_of
 
 comptime Ptr = UnsafePointer[Float64, AnyOrigin[mut=True]]
-comptime PARALLEL_THRESHOLD = 262144
-comptime PARALLEL_CHUNK = 65536
+comptime PARALLEL_THRESHOLD = 2097152
+comptime PARALLEL_CHUNK = 131072
+comptime MAX_PARALLEL_TASKS = 16
 comptime EXTREME_QUEUE_SIZE = 256
 
 
@@ -147,20 +148,18 @@ def mtl_rsi(src_addr: Int, n: Int, period: Int, dst_addr: Int) abi("C"):
             loss -= change
     var period_value = Float64(period)
     var previous_weight = Float64(period - 1)
+    var inverse_period = 1.0 / period_value
+    var decay = previous_weight * inverse_period
     gain /= period_value
     loss /= period_value
     var denom = gain + loss
     dst[period] = 100.0 * gain / denom if denom != 0.0 else 0.0
     for i in range(period + 1, n):
         var change = src[i] - src[i - 1]
-        gain *= previous_weight
-        loss *= previous_weight
-        if change > 0.0:
-            gain += change
-        elif change < 0.0:
-            loss -= change
-        gain /= period_value
-        loss /= period_value
+        var positive = change if change > 0.0 else 0.0
+        var negative = -change if change < 0.0 else 0.0
+        gain = gain * decay + positive * inverse_period
+        loss = loss * decay + negative * inverse_period
         denom = gain + loss
         dst[i] = 100.0 * gain / denom if denom != 0.0 else 0.0
 
@@ -190,17 +189,31 @@ def mtl_macd(
     var lookback = first_macd + signal_period - 1
     if n <= lookback:
         return
-    var fast = hist
-    var slow = macd
-    ema_from(src, fast, n, sp - fp, fp)
-    ema_from(src, slow, n, 0, sp)
+    var fast = 0.0
+    var slow = 0.0
+    for i in range(sp - fp, sp):
+        fast += src[i]
+    for i in range(sp):
+        slow += src[i]
+    fast /= Float64(fp)
+    slow /= Float64(sp)
+    var fast_alpha = 2.0 / Float64(fp + 1)
+    var slow_alpha = 2.0 / Float64(sp + 1)
     var sig = 0.0
-    for i in range(first_macd, lookback + 1):
-        sig += fast[i] - slow[i]
+    sig += fast - slow
+    for i in range(first_macd + 1, lookback + 1):
+        var input = src[i]
+        fast += fast_alpha * (input - fast)
+        slow += slow_alpha * (input - slow)
+        sig += fast - slow
     sig /= Float64(signal_period)
     var alpha = 2.0 / Float64(signal_period + 1)
     for i in range(lookback, n):
-        var value = fast[i] - slow[i]
+        if i > lookback:
+            var input = src[i]
+            fast += fast_alpha * (input - fast)
+            slow += slow_alpha * (input - slow)
+        var value = fast - slow
         if i > lookback:
             sig += alpha * (value - sig)
         macd[i] = value
@@ -382,23 +395,42 @@ def window_extreme_range(
     var first = first_end - period + 1
     var value = src[first]
     var value_index = first
-    for i in range(first + 1, first_end + 1):
-        if (mode == 0 and src[i] <= value) or (mode == 1 and src[i] >= value):
-            value = src[i]
-            value_index = i
-    dst[first_end] = value
-    for end in range(first_end + 1, stop_end):
-        if (mode == 0 and src[end] <= value) or (mode == 1 and src[end] >= value):
-            value = src[end]
-            value_index = end
-        elif value_index <= end - period:
-            value_index = end - period + 1
-            value = src[value_index]
-            for i in range(value_index + 1, end + 1):
-                if (mode == 0 and src[i] <= value) or (mode == 1 and src[i] >= value):
-                    value = src[i]
-                    value_index = i
-        dst[end] = value
+    if mode == 0:
+        for i in range(first + 1, first_end + 1):
+            if src[i] <= value:
+                value = src[i]
+                value_index = i
+        dst[first_end] = value
+        for end in range(first_end + 1, stop_end):
+            if src[end] <= value:
+                value = src[end]
+                value_index = end
+            elif value_index <= end - period:
+                value_index = end - period + 1
+                value = src[value_index]
+                for i in range(value_index + 1, end + 1):
+                    if src[i] <= value:
+                        value = src[i]
+                        value_index = i
+            dst[end] = value
+    else:
+        for i in range(first + 1, first_end + 1):
+            if src[i] >= value:
+                value = src[i]
+                value_index = i
+        dst[first_end] = value
+        for end in range(first_end + 1, stop_end):
+            if src[end] >= value:
+                value = src[end]
+                value_index = end
+            elif value_index <= end - period:
+                value_index = end - period + 1
+                value = src[value_index]
+                for i in range(value_index + 1, end + 1):
+                    if src[i] >= value:
+                        value = src[i]
+                        value_index = i
+            dst[end] = value
 
 
 def window_deque_range(
@@ -441,6 +473,55 @@ def window_deque_range(
         dst[end] = src[queue[head & (EXTREME_QUEUE_SIZE - 1)]]
 
 
+def window_block(src: Ptr, dst: Ptr, n: Int, period: Int, mode: Int):
+    if mode == 0:
+        var block = 0
+        while block < n:
+            var stop = min(n, block + period)
+            var value = src[block]
+            dst[block] = value
+            for i in range(block + 1, stop):
+                if src[i] <= value:
+                    value = src[i]
+                dst[i] = value
+            block = stop
+        block = ((n - 1) // period) * period
+        while block >= 0:
+            var i = min(n, block + period) - 1
+            var suffix = src[i]
+            while i >= block:
+                if src[i] <= suffix:
+                    suffix = src[i]
+                if i <= n - period:
+                    var end = i + period - 1
+                    dst[end] = suffix if suffix <= dst[end] else dst[end]
+                i -= 1
+            block -= period
+    else:
+        var block = 0
+        while block < n:
+            var stop = min(n, block + period)
+            var value = src[block]
+            dst[block] = value
+            for i in range(block + 1, stop):
+                if src[i] >= value:
+                    value = src[i]
+                dst[i] = value
+            block = stop
+        block = ((n - 1) // period) * period
+        while block >= 0:
+            var i = min(n, block + period) - 1
+            var suffix = src[i]
+            while i >= block:
+                if src[i] >= suffix:
+                    suffix = src[i]
+                if i <= n - period:
+                    var end = i + period - 1
+                    dst[end] = suffix if suffix >= dst[end] else dst[end]
+                i -= 1
+            block -= period
+
+
 @export("mtl_window")
 def mtl_window(
     src_addr: Int, n: Int, period: Int, mode: Int, dst_addr: Int
@@ -461,19 +542,27 @@ def mtl_window(
     if n < period:
         return
     if n < PARALLEL_THRESHOLD:
-        if period <= EXTREME_QUEUE_SIZE:
+        if period <= 64:
+            window_block(src, dst, n, period, mode)
+        elif period <= EXTREME_QUEUE_SIZE:
             window_deque_range(src, dst, period, mode, period - 1, n)
         else:
             window_extreme_range(src, dst, period, mode, period - 1, n)
         return
     var valid = n - period + 1
-    var tasks = (valid + PARALLEL_CHUNK - 1) // PARALLEL_CHUNK
+    var tasks = min(
+        MAX_PARALLEL_TASKS,
+        (valid + PARALLEL_CHUNK - 1) // PARALLEL_CHUNK,
+    )
+    var chunk = (valid + tasks - 1) // tasks
 
     @parameter
     def work(task: Int):
-        var first_end = period - 1 + task * PARALLEL_CHUNK
-        var stop_end = min(n, first_end + PARALLEL_CHUNK)
-        if period <= EXTREME_QUEUE_SIZE:
+        var first_end = period - 1 + task * chunk
+        var stop_end = min(n, first_end + chunk)
+        if period <= 64:
+            window_extreme_range(src, dst, period, mode, first_end, stop_end)
+        elif period <= EXTREME_QUEUE_SIZE:
             window_deque_range(src, dst, period, mode, first_end, stop_end)
         else:
             window_extreme_range(src, dst, period, mode, first_end, stop_end)
@@ -613,12 +702,16 @@ def mtl_cci(
         cci_finish_range(typical, dst, period, period - 1, n)
         return
     var valid = n - period + 1
-    var tasks = (valid + PARALLEL_CHUNK - 1) // PARALLEL_CHUNK
+    var tasks = min(
+        MAX_PARALLEL_TASKS,
+        (valid + PARALLEL_CHUNK - 1) // PARALLEL_CHUNK,
+    )
+    var chunk = (valid + tasks - 1) // tasks
 
     @parameter
     def work(task: Int):
-        var first_end = period - 1 + task * PARALLEL_CHUNK
-        var stop_end = min(n, first_end + PARALLEL_CHUNK)
+        var first_end = period - 1 + task * chunk
+        var stop_end = min(n, first_end + chunk)
         cci_finish_range(typical, dst, period, first_end, stop_end)
 
     map[work](tasks)

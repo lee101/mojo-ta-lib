@@ -245,6 +245,7 @@ def _window(real, timeperiod, mode):
     timeperiod = _period(timeperiod)
     result = _result(real.size, timeperiod - 1)
     lib().mtl_window(addr(real), real.size, timeperiod, mode, addr(result))
+    result[: min(real.size, timeperiod - 1)] = np.nan
     return result
 
 

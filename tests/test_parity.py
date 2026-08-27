@@ -169,20 +169,31 @@ def test_cci_simd_tail_parity():
     )
 
 
-@pytest.mark.parametrize("size", [262143, 262149])
+@pytest.mark.parametrize("size", [2097151, 2097157])
 def test_parallel_threshold_paths(size):
     rng = np.random.default_rng(size)
     close = np.ascontiguousarray(100.0 + np.cumsum(rng.normal(size=size)))
-    high = np.ascontiguousarray(close + rng.uniform(0.0, 3.0, size))
-    low = np.ascontiguousarray(close - rng.uniform(0.0, 3.0, size))
+    channel_close = np.ascontiguousarray(100.0 + rng.normal(size=size))
+    high = np.ascontiguousarray(channel_close + rng.uniform(0.0, 3.0, size))
+    low = np.ascontiguousarray(channel_close - rng.uniform(0.0, 3.0, size))
     assert_parity(
         mojo_talib.MIN(close, timeperiod=30),
         talib.MIN(close, timeperiod=30),
     )
     assert_parity(
-        mojo_talib.CCI(high, low, close, timeperiod=14),
-        talib.CCI(high, low, close, timeperiod=14),
+        mojo_talib.CCI(high, low, channel_close, timeperiod=14),
+        talib.CCI(high, low, channel_close, timeperiod=14),
     )
+
+
+def test_window_block_tail_parity():
+    rng = np.random.default_rng(911)
+    values = np.ascontiguousarray(rng.normal(size=137))
+    for name in ("MIN", "MAX"):
+        assert_parity(
+            getattr(mojo_talib, name)(values, timeperiod=30),
+            getattr(talib, name)(values, timeperiod=30),
+        )
 
 
 @pytest.mark.parametrize(
