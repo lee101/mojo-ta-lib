@@ -1,6 +1,6 @@
 """TA-Lib-compatible indicator kernels and their C ABI."""
 
-from std.algorithm import parallelize
+from std.algorithm import map
 from std.math import atan, sqrt
 from std.memory import stack_allocation
 from std.sys.info import simd_width_of
@@ -478,7 +478,7 @@ def mtl_window(
         else:
             window_extreme_range(src, dst, period, mode, first_end, stop_end)
 
-    parallelize[work](tasks, min(tasks, 16))
+    map[work](tasks)
 
 
 @export("mtl_price")
@@ -621,7 +621,7 @@ def mtl_cci(
         var stop_end = min(n, first_end + PARALLEL_CHUNK)
         cci_finish_range(typical, dst, period, first_end, stop_end)
 
-    parallelize[work](tasks, min(tasks, 16))
+    map[work](tasks)
 
 
 @export("mtl_willr")
